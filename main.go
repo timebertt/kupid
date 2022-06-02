@@ -17,32 +17,32 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"os"
 	"time"
 
+	extensionswebhook "github.com/gardener/gardener/extensions/pkg/webhook"
+	"github.com/gardener/gardener/extensions/pkg/webhook/certificates"
 	uberzap "go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
+	batchv1beta1 "k8s.io/api/batch/v1beta1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 	"k8s.io/client-go/rest"
+	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
-	appsv1 "k8s.io/api/apps/v1"
-	batchv1 "k8s.io/api/batch/v1"
-	batchv1beta1 "k8s.io/api/batch/v1beta1"
-	corev1 "k8s.io/api/core/v1"
-
-	extensionswebhook "github.com/gardener/gardener/extensions/pkg/webhook"
 	kupidv1alpha1 "github.com/gardener/kupid/api/v1alpha1"
 	"github.com/gardener/kupid/pkg/webhook"
-	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 )
 
 var (
@@ -91,6 +91,8 @@ func init() {
 
 func main() {
 	var (
+		ctx = ctrl.SetupSignalHandler()
+
 		webhookPort           int
 		metricsAddr           string
 		healthzAddr           string
@@ -156,7 +158,7 @@ func main() {
 	}()
 
 	if registerWebhooks {
-		if err := doRegisterWebhooks(mgr, certDir, namespace, int32(webhookTimeoutSeconds)); err != nil {
+		if err := doRegisterWebhooks(ctx, mgr, certDir, namespace, int32(webhookTimeoutSeconds)); err != nil {
 			setupLog.Error(err, "Error registering webhooks. Aborting startup...")
 			os.Exit(1)
 		}
@@ -170,21 +172,75 @@ func main() {
 	}
 
 	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
 }
 
-func doRegisterWebhooks(mgr manager.Manager, certDir, namespace string, timeoutSeconds int32) error {
-	client, err := getClient(mgr)
-	if err != nil {
-		return err
+func doRegisterWebhooks(ctx context.Context, mgr manager.Manager, certDir, namespace string, timeoutSeconds int32) error {
+	setupLog.Info("Registering webhooks in seed cluster")
+
+	var (
+		c                       = mgr.GetClient()
+		clientConfig            = buildWebhookClientConfig(namespace)
+		validatingWebhookConfig = newValidatingWebhookConfig(clientConfig, timeoutSeconds)
+		mutatingWebhookConfig   = newMutatingWebhookConfig(clientConfig, timeoutSeconds)
+	)
+	setupLog.Info("Registering TLS certificates if necessary.")
+
+	if namespace == "" {
+		// If the namespace is not set (e.g. when running locally), then we can't use the secrets manager for managing
+		// the webhook certificates. We simply generate a new certificate and write it to CertDir in this case.
+		setupLog.Info("Running webhooks with unmanaged certificates (i.e., the webhook CA will not be rotated automatically). " +
+			"This mode is supposed to be used for development purposes only. Make sure to set WEBHOOK_CONFIG_NAMESPACE in production.")
+
+		caBundle, err := certificates.GenerateUnmanagedCertificates(webhookName, certDir, extensionswebhook.ModeService, "")
+		if err != nil {
+			return fmt.Errorf("error generating new certificates for webhook server: %w", err)
+		}
+
+		// register seed webhook config once we become leader – with the CA bundle we just generated
+		if err := mgr.Add(runOnceWithLeaderElection(func(ctx context.Context) error {
+			if err := extensionswebhook.ReconcileSeedWebhookConfig(ctx, c, validatingWebhookConfig, namespace, caBundle); err != nil {
+				return nil
+			}
+			return extensionswebhook.ReconcileSeedWebhookConfig(ctx, c, mutatingWebhookConfig, namespace, caBundle)
+		})); err != nil {
+			return fmt.Errorf("error reconciling seed webhook config: %w", err)
+		}
+
+		return nil
 	}
 
-	ctx := context.TODO()
+	// register seed webhook config once we become leader – without CA bundle
+	// We only care about registering the desired webhooks here, but not the CA bundle, it will be managed by the
+	// reconciler.
+	if err := mgr.Add(runOnceWithLeaderElection(func(ctx context.Context) error {
+		if err := extensionswebhook.ReconcileSeedWebhookConfig(ctx, c, validatingWebhookConfig, namespace, nil); err != nil {
+			return nil
+		}
+		return extensionswebhook.ReconcileSeedWebhookConfig(ctx, c, mutatingWebhookConfig, namespace, nil)
+	})); err != nil {
+		return fmt.Errorf("error reconciling seed webhook config: %w", err)
+	}
 
-	setupLog.Info("Registering TLS certificates if necessary.")
+	if err := certificates.AddCertificateManagementToManager(
+		ctx,
+		mgr,
+		clock.RealClock{},
+		seedWebhookConfig,
+		shootWebhookConfig,
+		atomicShootWebhookConfig,
+		webhookName,
+		c.shootWebhookManagedResourceName,
+		c.shootNamespaceSelector,
+		c.Server.Namespace,
+		c.Server.Mode,
+		c.Server.URL,
+	); err != nil {
+		return err
+	}
 
 	caBundle, err := extensionswebhook.GenerateCertificates(
 		ctx,
@@ -199,27 +255,12 @@ func doRegisterWebhooks(mgr manager.Manager, certDir, namespace string, timeoutS
 		return err
 	}
 
-	clientConfig := buildWebhookClientConfig(namespace, caBundle)
-
-	setupLog.Info("Registering webhooks if necessary.")
-
-	for _, f := range []webhookConfigGeneratorFn{
-		newValidatingWebhookConfig,
-		newMutatingWebhookConfig,
-	} {
-		obj, mutateFn := f(clientConfig, timeoutSeconds)
-		if _, err := controllerutil.CreateOrUpdate(ctx, client, obj, mutateFn); err != nil {
-			return err
-		}
-	}
-
 	return nil
 }
 
-func buildWebhookClientConfig(namespace string, caBundle []byte) admissionregistrationv1.WebhookClientConfig {
+func buildWebhookClientConfig(namespace string) admissionregistrationv1.WebhookClientConfig {
 	var path = webhook.WebhookPath
 	return admissionregistrationv1.WebhookClientConfig{
-		CABundle: caBundle,
 		Service: &admissionregistrationv1.ServiceReference{
 			Namespace: namespace,
 			Name:      webhookFullName,
@@ -239,24 +280,18 @@ func buildRuleWithOperations(gv schema.GroupVersion, resources []string, operati
 	}
 }
 
-type webhookConfigGeneratorFn func(clientConfig admissionregistrationv1.WebhookClientConfig, timeoutSeconds int32) (client.Object, controllerutil.MutateFn)
-
-// func newValidatingWebhookConfig(clientConfig admissionregistrationv1.WebhookClientConfig, timeoutSeconds int32) (client.Object, controllerutil.MutateFn) {
-func newValidatingWebhookConfig(clientConfig admissionregistrationv1.WebhookClientConfig, timeoutSeconds int32) (client.Object, controllerutil.MutateFn) {
+func newValidatingWebhookConfig(clientConfig admissionregistrationv1.WebhookClientConfig, timeoutSeconds int32) *admissionregistrationv1.ValidatingWebhookConfiguration {
 	var (
 		ignore = admissionregistrationv1.Ignore
 		exact  = admissionregistrationv1.Exact
 		none   = admissionregistrationv1.SideEffectClassNone
 	)
 
-	obj := &admissionregistrationv1.ValidatingWebhookConfiguration{
+	return &admissionregistrationv1.ValidatingWebhookConfiguration{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: webhookFullName,
 		},
-	}
-
-	return obj, func() error {
-		obj.Webhooks = []admissionregistrationv1.ValidatingWebhook{
+		Webhooks: []admissionregistrationv1.ValidatingWebhook{
 			{
 				Name:         "validate." + kupidv1alpha1.GroupVersion.Group,
 				ClientConfig: clientConfig,
@@ -278,12 +313,11 @@ func newValidatingWebhookConfig(clientConfig admissionregistrationv1.WebhookClie
 					"v1",
 				},
 			},
-		}
-		return nil
+		},
 	}
 }
 
-func newMutatingWebhookConfig(clientConfig admissionregistrationv1.WebhookClientConfig, timeoutSeconds int32) (client.Object, controllerutil.MutateFn) {
+func newMutatingWebhookConfig(clientConfig admissionregistrationv1.WebhookClientConfig, timeoutSeconds int32) *admissionregistrationv1.MutatingWebhookConfiguration {
 	var (
 		ignore     = admissionregistrationv1.Ignore
 		equivalent = admissionregistrationv1.Equivalent
@@ -291,14 +325,11 @@ func newMutatingWebhookConfig(clientConfig admissionregistrationv1.WebhookClient
 		ifNeeded   = admissionregistrationv1.IfNeededReinvocationPolicy
 	)
 
-	obj := &admissionregistrationv1.MutatingWebhookConfiguration{
+	return &admissionregistrationv1.MutatingWebhookConfiguration{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: webhookFullName,
 		},
-	}
-
-	return obj, func() error {
-		obj.Webhooks = []admissionregistrationv1.MutatingWebhook{
+		Webhooks: []admissionregistrationv1.MutatingWebhook{
 			{
 				Name: "mutate." + kupidv1alpha1.GroupVersion.Group,
 				NamespaceSelector: &metav1.LabelSelector{
@@ -345,16 +376,17 @@ func newMutatingWebhookConfig(clientConfig admissionregistrationv1.WebhookClient
 					"v1",
 				},
 			},
-		}
-		return nil
+		},
 	}
 }
 
-func getClient(mgr manager.Manager) (client.Client, error) {
-	s := runtime.NewScheme()
-	if err := clientgoscheme.AddToScheme(s); err != nil {
-		return nil, err
-	}
+// runOnceWithLeaderElection is a function that is run exactly once when the manager, it is added to, becomes leader.
+type runOnceWithLeaderElection func(ctx context.Context) error
 
-	return client.New(mgr.GetConfig(), client.Options{Scheme: s})
+func (r runOnceWithLeaderElection) NeedLeaderElection() bool {
+	return true
+}
+
+func (r runOnceWithLeaderElection) Start(ctx context.Context) error {
+	return r(ctx)
 }

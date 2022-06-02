@@ -63,13 +63,17 @@ github.com/gardener/external-dns-management/pkg/apis/dns
 github.com/gardener/external-dns-management/pkg/apis/dns/v1alpha1
 # github.com/gardener/gardener v1.47.1-0.20220602071445-0c6b6e8be519
 ## explicit; go 1.18
+github.com/gardener/gardener/extensions/pkg/controller
 github.com/gardener/gardener/extensions/pkg/util
 github.com/gardener/gardener/extensions/pkg/webhook
+github.com/gardener/gardener/extensions/pkg/webhook/certificates
+github.com/gardener/gardener/extensions/pkg/webhook/shoot
 github.com/gardener/gardener/hack
 github.com/gardener/gardener/pkg/apis/core
 github.com/gardener/gardener/pkg/apis/core/install
 github.com/gardener/gardener/pkg/apis/core/v1alpha1
 github.com/gardener/gardener/pkg/apis/core/v1alpha1/constants
+github.com/gardener/gardener/pkg/apis/core/v1alpha1/helper
 github.com/gardener/gardener/pkg/apis/core/v1beta1
 github.com/gardener/gardener/pkg/apis/core/v1beta1/constants
 github.com/gardener/gardener/pkg/apis/core/v1beta1/helper
@@ -92,17 +96,26 @@ github.com/gardener/gardener/pkg/client/kubernetes
 github.com/gardener/gardener/pkg/client/kubernetes/cache
 github.com/gardener/gardener/pkg/controllerutils
 github.com/gardener/gardener/pkg/controllerutils/predicate
+github.com/gardener/gardener/pkg/extensions
 github.com/gardener/gardener/pkg/gardenlet/apis/config
 github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1
 github.com/gardener/gardener/pkg/logger
 github.com/gardener/gardener/pkg/resourcemanager/controller/garbagecollector/references
 github.com/gardener/gardener/pkg/utils
+github.com/gardener/gardener/pkg/utils/chart
 github.com/gardener/gardener/pkg/utils/context
 github.com/gardener/gardener/pkg/utils/errors
 github.com/gardener/gardener/pkg/utils/flow
+github.com/gardener/gardener/pkg/utils/gardener
+github.com/gardener/gardener/pkg/utils/imagevector
 github.com/gardener/gardener/pkg/utils/kubernetes
+github.com/gardener/gardener/pkg/utils/kubernetes/health
+github.com/gardener/gardener/pkg/utils/kubernetes/unstructured
+github.com/gardener/gardener/pkg/utils/managedresources
+github.com/gardener/gardener/pkg/utils/managedresources/builder
 github.com/gardener/gardener/pkg/utils/retry
 github.com/gardener/gardener/pkg/utils/secrets
+github.com/gardener/gardener/pkg/utils/secrets/manager
 github.com/gardener/gardener/pkg/utils/timewindow
 github.com/gardener/gardener/pkg/utils/version
 # github.com/gardener/hvpa-controller v0.3.1
@@ -249,6 +262,9 @@ github.com/matttproud/golang_protobuf_extensions/pbutil
 # github.com/mitchellh/copystructure v1.2.0
 ## explicit; go 1.15
 github.com/mitchellh/copystructure
+# github.com/mitchellh/hashstructure/v2 v2.0.2
+## explicit; go 1.14
+github.com/mitchellh/hashstructure/v2
 # github.com/mitchellh/reflectwalk v1.0.2
 ## explicit
 github.com/mitchellh/reflectwalk
@@ -671,6 +687,8 @@ k8s.io/apimachinery/third_party/forked/golang/netutil
 k8s.io/apimachinery/third_party/forked/golang/reflect
 # k8s.io/apiserver v0.23.3
 ## explicit; go 1.16
+k8s.io/apiserver/pkg/apis/config
+k8s.io/apiserver/pkg/apis/config/v1
 k8s.io/apiserver/pkg/authentication/user
 # k8s.io/autoscaler v0.0.0-20190805135949-100e91ba756e
 ## explicit
@@ -849,6 +867,7 @@ k8s.io/code-generator/third_party/forked/golang/reflect
 ## explicit; go 1.16
 k8s.io/component-base/config
 k8s.io/component-base/config/v1alpha1
+k8s.io/component-base/version
 # k8s.io/gengo v0.0.0-20210813121822-485abfe95c7c
 ## explicit; go 1.13
 k8s.io/gengo/args
